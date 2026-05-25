@@ -7,7 +7,7 @@ Automated e-commerce competitor pricing analysis system built with Python, SerpA
 - Extracts competitor product listings
 - Uses fuzzy matching to identify similar products
 - Calculates market pricing statistics
-- Generates pricing recommendations based on margins and competitor averages
+- Generates dynamic pricing recommendations using configurable target margins and competitor-aware pricing strategies
 - Outputs structured CSV reports
 
 # Technologies Used
@@ -23,7 +23,7 @@ Automated e-commerce competitor pricing analysis system built with Python, SerpA
 2. Query Google Shopping for competitor listings
 3. Parse and clean product information
 4. Analyze competitor pricing data
-5. Generate pricing recommendations
+5. Generate competitor-aware pricing recommendations
 6. Export results to CSV
 
 # Setup

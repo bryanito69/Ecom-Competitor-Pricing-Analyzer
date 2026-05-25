@@ -13,14 +13,14 @@ from thefuzz import fuzz
 from dotenv import load_dotenv
 from pathlib import Path
 
-# -------------------------------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 # 1) Determine script directory (so files are always found)
-# -------------------------------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 SCRIPT_DIR = Path(__file__).parent.resolve()
 
-# -------------------------------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 # 2) Load API key from .env (must be in same folder as this script)
-# -------------------------------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 load_dotenv(SCRIPT_DIR / ".env")
 
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
@@ -31,19 +31,19 @@ if not SERPAPI_KEY:
         "and contains: SERPAPI_KEY=your_key_here"
     )
 
-# -------------------------------------------------------------------------------------------------
-# 3) File paths
-# -------------------------------------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# 3) File paths (absolute)
+# ----------------------------------------------------------------------
 OUR_PRICES_FILE = SCRIPT_DIR / "our_products.csv"
 OUTPUT_FILE      = SCRIPT_DIR / "competitor_analysis.csv"
 SEARCH_ENGINE    = "google_shopping"
 COUNTRY          = "us"
 
-# -------------------------------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 # Functions
-# -------------------------------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 def fetch_google_shopping(query, num_results=10):
-    """Query Google Shopping via SerpApi and return raw JSON"""
+    """Query Google Shopping via SerpApi and return raw JSON."""
     url = "https://serpapi.com/search"
     params = {
         "api_key": SERPAPI_KEY,
@@ -59,7 +59,7 @@ def fetch_google_shopping(query, num_results=10):
 
 
 def parse_shopping_results(serp_data):
-    """Parse SerpApi JSON using BeautifulSoup (HTML snippets)"""
+    """Parse SerpApi JSON using BeautifulSoup (HTML snippets)."""
     products = []
     shopping_results = serp_data.get("shopping_results", [])
     for item in shopping_results:
@@ -93,18 +93,19 @@ def parse_shopping_results(serp_data):
 
 
 def load_our_products(filepath):
-    """Read CSV and return list of dicts with title, price, cost, search_term"""
+    """Read our own product list from CSV.
+    Expected columns: title, price, cost, search_term (optional), margin (optional)
+    """
     if not filepath.is_file():
         print(f"ERROR: File not found: {filepath}")
+        print("Please create 'our_products.csv' in this folder with columns: title,price,cost,search_term,margin")
         return []
     products = []
-    with open(filepath, newline='', encoding='utf-8-sig') as f:  # utf-8-sig handles BOM
+    with open(filepath, newline='', encoding='utf-8-sig') as f:
         reader = csv.DictReader(f)
         if not reader.fieldnames:
             print("ERROR: CSV has no header row.")
             return []
-        print("CSV columns found:", reader.fieldnames)  # debug line
-        # Check required columns
         required = {'title', 'price', 'cost'}
         if not required.issubset(set(reader.fieldnames)):
             print(f"ERROR: CSV missing required columns. Need: {required}")
@@ -118,11 +119,13 @@ def load_our_products(filepath):
                 price = float(row.get('price', 0))
                 cost = float(row.get('cost', 0))
                 search_term = row.get('search_term', '').strip() or title
+                margin = float(row.get('margin', 0.5))  # default 50% if not provided
                 products.append({
                     "title": title,
                     "price": price,
                     "cost": cost,
                     "search_term": search_term,
+                    "margin": margin,
                 })
             except (ValueError, TypeError) as e:
                 print(f"  Skipping row {row_num}: {e}")
@@ -130,23 +133,8 @@ def load_our_products(filepath):
     return products
 
 
-
-def find_matching_competitor(our_title, competitors, threshold=75):
-    """Fuzzy token set ratio match. Returns (best_match, score) or (None, 0)"""
-    best_score = 0
-    best_match = None
-    for comp in competitors:
-        score = fuzz.token_set_ratio(our_title.lower(), comp["title"].lower())
-        if score > best_score:
-            best_score = score
-            best_match = comp
-    if best_score >= threshold:
-        return best_match, best_score
-    return None, 0
-
-
 def compute_market_stats(matched_products):
-    """Average, min, max price from matched competitors"""
+    """Average, min, max price from matched competitors."""
     prices = [p["price"] for p in matched_products if p["price"] > 0]
     if not prices:
         return {"avg_price": 0, "min_price": 0, "max_price": 0, "count": 0}
@@ -158,43 +146,42 @@ def compute_market_stats(matched_products):
     }
 
 
-def recommend_price(our_price, cost, market_avg):
-    """Generate pricing recommendation using actual margin vs. market average
-
-    Compares current profit (our_price - cost) against a target of 50% margin on cost
+def recommend_price(our_price, cost, market_avg, target_margin=0.5, competitor_price=None):
+    """
+    Generate pricing recommendation based on competitor price.
+    Suggests: min(our_price, competitor_price * 0.95) but not below cost.
     """
     if cost <= 0 or our_price <= 0:
         return "Invalid price or cost data.", None
 
-    current_margin = our_price - cost
-    target_margin  = cost * 0.5          # 50% profit on cost
-    ideal_price    = cost + target_margin
+    # Fallback if no competitor price
+    if competitor_price is None or competitor_price <= 0:
+        target_profit = cost * target_margin
+        ideal_price = cost + target_profit
+        return f"No competitor price – set at ${ideal_price:.2f} (cost+{int(target_margin*100)}%)", ideal_price
 
-    if market_avg <= 0:
-        # No competitors found – recommend cost‑based price
-        return f"Set price based on cost – ${ideal_price:.2f} (no market data)", ideal_price
+    # Suggested = 95% of competitor price (to undercut slightly)
+    suggested = round(competitor_price * 0.95, 2)
 
-    # Prefer to meet or beat market average, but not below cost
-    if ideal_price <= market_avg:
-        suggested = ideal_price
-        recommendation = (
-            f"Market avg ${market_avg:.2f}. "
-            f"Current margin ${current_margin:.2f}. "
-            f"Set at ${suggested:.2f} to achieve 50% profit (${target_margin:.2f} margin)."
-        )
-    else:
-        suggested = market_avg
-        recommendation = (
-            f"Target price ${ideal_price:.2f} (50% margin) above market avg ${market_avg:.2f}. "
-            f"Cap at market avg ${suggested:.2f} to stay competitive. "
-            f"Current margin ${current_margin:.2f}."
-        )
+    # But never sell below cost
+    if suggested < cost:
+        suggested = cost + 0.01  # small profit
+
+    # Also never go above your current price (unless you want to)
+    # suggested = min(suggested, our_price)  # uncomment if you don't want to raise price
+
+    recommendation = (
+        f"Competitor price ${competitor_price:.2f}. "
+        f"Suggested undercut at ${suggested:.2f} (95% of competitor). "
+        f"Your cost ${cost:.2f}. Market avg ${market_avg:.2f}."
+    )
     return recommendation, suggested
 
 
-# -------------------------------------------------------------------------------------------------
+
+# ----------------------------------------------------------------------
 # Main execution
-# -------------------------------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 def main():
     print(f"Looking for CSV at: {OUR_PRICES_FILE}")
     our_products = load_our_products(OUR_PRICES_FILE)
@@ -208,9 +195,11 @@ def main():
         our_price = product["price"]
         cost      = product["cost"]
         search_query = product.get("search_term", our_title)
+        margin = product.get("margin", 0.5)
 
         print(f"\nProcessing: {our_title}")
         print(f"  Searching for: {search_query}")
+        print(f"  Target margin: {int(margin * 100)}%")
 
         # Query Google Shopping
         try:
@@ -225,11 +214,12 @@ def main():
 
         if not competitors:
             print("  No competitors found – using cost‑based recommendation only.")
-            rec, suggested = recommend_price(our_price, cost, 0)
+            rec, suggested = recommend_price(our_price, cost, 0, margin)
             results.append({
                 "our_title": our_title,
                 "our_price": our_price,
                 "cost": cost,
+                "target_margin": margin,
                 "competitor_name": "N/A",
                 "competitor_price": 0,
                 "competitor_source": "N/A",
@@ -254,11 +244,12 @@ def main():
 
         # Create ONE ROW PER COMPETITOR
         for comp in top_3:
-            rec, suggested = recommend_price(our_price, cost, stats["avg_price"])
+            rec, suggested = recommend_price(our_price, cost, stats["avg_price"], margin, competitor_price=comp["price"])
             results.append({
                 "our_title": our_title,
                 "our_price": our_price,
                 "cost": cost,
+                "target_margin": margin,
                 "competitor_name": comp["title"],
                 "competitor_price": comp["price"],
                 "competitor_source": comp["source"],
@@ -270,12 +261,12 @@ def main():
                 "suggested_price": suggested if suggested else ""
             })
 
-        time.sleep(1)
+        time.sleep(1)  # polite delay to avoid rate limits
 
-    # Output CSV
+    # Write output CSV
     if results:
         keys = [
-            "our_title", "our_price", "cost",
+            "our_title", "our_price", "cost", "target_margin",
             "competitor_name", "competitor_price", "competitor_source",
             "market_min", "market_avg", "market_max", "total_competitors",
             "recommendation", "suggested_price"
@@ -291,3 +282,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
